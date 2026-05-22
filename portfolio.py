@@ -92,9 +92,11 @@ _NAVER_HEADERS = {
 }
 
 
-def resolve_kr_via_naver_search(name: str) -> str | None:
-    """네이버 통합검색에서 한국 종목명 → 6자리 KRX 코드 추출.
-    Haiku 환각 없이 100% 실제 코드 반환. KRX로 검증.
+def resolve_kr_via_naver_search(name: str) -> tuple[str | None, str | None]:
+    """네이버 통합검색에서 한국 종목명 → (6자리 KRX 코드, KRX 정식 종목명) 반환.
+
+    부분 텍스트(예: 'LIG디펜스앤')로 검색해도 KRX 정식 명칭(예: 'LIG넥스원')으로
+    교정된다. 실패 시 (None, None).
     """
     import requests
 
@@ -109,16 +111,17 @@ def resolve_kr_via_naver_search(name: str) -> str | None:
         # finance.naver.com 링크 안의 code=XXXXXX 패턴 (가장 신뢰도 높음)
         codes = re.findall(r"finance\.naver\.com[^\"']*code=(\d{6})", resp.text)
         if not codes:
-            return None
+            return None, None
         # 가장 많이 등장한 코드 (검색 결과 상단 종목)
         from collections import Counter
         ticker, _ = Counter(codes).most_common(1)[0]
-        # KRX 실재 검증
-        if verify_kr_ticker(ticker):
-            return ticker
-        return None
+        # KRX 실재 검증 + 정식 종목명 회수
+        canonical = verify_kr_ticker(ticker)
+        if canonical:
+            return ticker, canonical
+        return None, None
     except Exception:
-        return None
+        return None, None
 
 
 def classify_and_map(portfolio: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:

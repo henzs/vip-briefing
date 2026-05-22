@@ -384,30 +384,52 @@ def _note_panel(doc, label: str, body_lines: list[str]):
 
 
 def _holdings_table(doc, sorted_p: list[dict], stock_data: dict, full=False):
-    """보유 종목 표 — full=True 시 모든 컬럼."""
+    """보유 종목 표 — 깔끔한 경계선 표 형식 (한 행 = 한 줄)."""
     if full:
-        headers = ["#", "종목명", "티커", "비중", "현재가", "평가금액", "손익율", "PER", "PBR", "외국인"]
+        # 티커 컬럼 제거 — 한 행에 한 줄로 들어가도록 나머지 컬럼 너비 확보
+        headers = ["#", "종목명", "비중", "현재가", "평가금액", "손익율", "PER", "PBR", "외국인"]
+        widths_cm = [0.6, 2.4, 1.2, 1.6, 2.0, 1.6, 1.4, 1.2, 1.4]
+        body_size = 8
+        header_size = 9
     else:
         headers = ["#", "종목명", "비중", "현재가", "평가금액", "손익율"]
+        widths_cm = [0.7, 4.0, 1.3, 1.8, 2.5, 1.5]
+        body_size = 9
+        header_size = 10
+
+    align_map = {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+    }
 
     table = doc.add_table(rows=len(sorted_p) + 1, cols=len(headers))
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    _table_no_borders(table)
-    # 헤더 (얇은 가로선만)
+    table.autofit = False
+    _table_thin_borders(table, ESPRESSO_LITE_HEX + "55", size=2)
+
+    # 모든 행에 컬럼 너비 적용
+    for row in table.rows:
+        for j, w in enumerate(widths_cm):
+            row.cells[j].width = Cm(w)
+
+    # 헤더 (다크 배경 + 크림 텍스트)
     for j, h in enumerate(headers):
         c = table.rows[0].cells[j]
-        c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER if j != 1 else WD_ALIGN_PARAGRAPH.LEFT
+        _shade_cell(c, ESPRESSO_HEX)
+        c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        c.paragraphs[0].alignment = (WD_ALIGN_PARAGRAPH.LEFT if j == 1
+                                     else WD_ALIGN_PARAGRAPH.CENTER)
         c.paragraphs[0].paragraph_format.space_before = Pt(4)
-        c.paragraphs[0].paragraph_format.space_after = Pt(6)
-        _add_run(c.paragraphs[0], h, bold=True, size=9, color=ESPRESSO)
-        _para_border_bottom(c.paragraphs[0], ESPRESSO_HEX, size=6)
+        c.paragraphs[0].paragraph_format.space_after = Pt(4)
+        _add_run(c.paragraphs[0], h, bold=True, size=header_size, color=CREAM)
 
+    # 바디
     for i, h in enumerate(sorted_p, 1):
         d = stock_data.get(h.get("ticker") or "", {}) or {}
         krx = d.get("krx", {}) or {}
         nf = d.get("naver_finance", {}) or {}
         price = krx.get("current_price")
-        target = nf.get("analyst_target_price")  # noqa: F841
         ev = h.get("평가금액")
         buy = h.get("매입가")
         pnl = h.get("손익율")
@@ -420,35 +442,35 @@ def _holdings_table(doc, sorted_p: list[dict], stock_data: dict, full=False):
 
         if full:
             cells = [
-                (f"{i}", ESPRESSO),
-                (h["종목명"], ESPRESSO),
-                (h.get("ticker") or "-", MUTED),
-                (f"{h.get('비중',0):.1f}%", ESPRESSO),
-                (f"{int(price):,}" if isinstance(price, (int, float)) and price != NOT_AVAILABLE else "-", ESPRESSO),
-                (f"{int(ev):,}" if isinstance(ev, (int, float)) else "-", ESPRESSO),
-                (f"{pnl:+.2f}%" if pnl is not None else "-", pnl_color),
-                (str(nf.get("per", "-")), ESPRESSO),
-                (str(nf.get("pbr", "-")), ESPRESSO),
-                (f"{foreign}%" if isinstance(foreign, (int, float)) else "-", ESPRESSO),
+                (f"{i}", ESPRESSO, "center"),
+                (h["종목명"], ESPRESSO, "left"),
+                (f"{h.get('비중',0):.1f}%", ESPRESSO, "center"),
+                (f"{int(price):,}" if isinstance(price, (int, float)) and price != NOT_AVAILABLE else "-", ESPRESSO, "right"),
+                (f"{int(ev):,}" if isinstance(ev, (int, float)) else "-", ESPRESSO, "right"),
+                (f"{pnl:+.2f}%" if pnl is not None else "-", pnl_color, "right"),
+                (str(nf.get("per", "-")), ESPRESSO, "center"),
+                (str(nf.get("pbr", "-")), ESPRESSO, "center"),
+                (f"{foreign}%" if isinstance(foreign, (int, float)) else "-", ESPRESSO, "center"),
             ]
         else:
             cells = [
-                (f"{i}", MUTED),
-                (h["종목명"], ESPRESSO),
-                (f"{h.get('비중',0):.1f}%", ESPRESSO),
-                (f"{int(price):,}" if isinstance(price, (int, float)) and price != NOT_AVAILABLE else "-", ESPRESSO),
-                (f"{int(ev):,}" if isinstance(ev, (int, float)) else "-", ESPRESSO),
-                (f"{pnl:+.2f}%" if pnl is not None else "-", pnl_color),
+                (f"{i}", MUTED, "center"),
+                (h["종목명"], ESPRESSO, "left"),
+                (f"{h.get('비중',0):.1f}%", ESPRESSO, "center"),
+                (f"{int(price):,}" if isinstance(price, (int, float)) and price != NOT_AVAILABLE else "-", ESPRESSO, "right"),
+                (f"{int(ev):,}" if isinstance(ev, (int, float)) else "-", ESPRESSO, "right"),
+                (f"{pnl:+.2f}%" if pnl is not None else "-", pnl_color, "right"),
             ]
-        for j, (val, color) in enumerate(cells):
+
+        for j, (val, color, align) in enumerate(cells):
             c = table.rows[i].cells[j]
-            c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER if j != 1 else WD_ALIGN_PARAGRAPH.LEFT
-            c.paragraphs[0].paragraph_format.space_before = Pt(4)
-            c.paragraphs[0].paragraph_format.space_after = Pt(4)
+            c.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            c.paragraphs[0].alignment = align_map[align]
+            c.paragraphs[0].paragraph_format.space_before = Pt(3)
+            c.paragraphs[0].paragraph_format.space_after = Pt(3)
             bold = (j == 1)
-            _add_run(c.paragraphs[0], val, bold=bold, size=9,
+            _add_run(c.paragraphs[0], val, bold=bold, size=body_size,
                      color=color if not bold else ESPRESSO)
-            _para_border_bottom(c.paragraphs[0], ESPRESSO_HEX + "1A", size=2)
 
 
 def _key_impact_bullets(doc, label: str, bullets: list[str]):
@@ -919,11 +941,6 @@ def build_summary(portfolio, stock_data, ai_analysis,
                  values=[_fp(krx.get("current_price")), str(nf.get("per", "-")),
                          str(nf.get("pbr", "-")), target_str])
 
-    # 섹터 시각화
-    doc.add_paragraph().paragraph_format.space_after = Pt(4)
-    _section_eyebrow(doc, "Sector Allocation  ·  섹터 구성")
-    _sector_bars(doc, sector_agg)
-
     # 리밸런싱 액션 (있을 때만)
     if rebalancing:
         _rebalancing_section(doc, rebalancing)
@@ -991,11 +1008,6 @@ def build_detail(portfolio, stock_data, ai_analysis,
     if macro:
         doc.add_page_break()
         _macro_page(doc, macro)
-
-    # ═══════════════ NEW PAGE: 포트폴리오 건강 진단 ═══════════════
-    if health:
-        doc.add_page_break()
-        _health_page(doc, health)
 
     # ═══════════════ PAGES 2~4: 상위 종목 매거진 스프레드 ═══════════════
     top3 = sorted_p[:3]
@@ -1074,27 +1086,11 @@ def build_detail(portfolio, stock_data, ai_analysis,
                     [f"단기:  {(ai.get('strategy_short') or '모니터링 유지').strip()}",
                      f"중기:  {(ai.get('strategy_mid') or '비중 유지 검토').strip()}"])
 
-        # 주요 리스크 — AI가 제공한 구체적 리스크 3개
-        _section_eyebrow(doc, "Key Risks  ·  주요 리스크")
-        risks = ai.get("risks") or [
-            "시장 변동성 및 업종 전반적 조정 리스크",
-            "실적 미달 및 가이던스 하향 가능성",
-            "글로벌 매크로 환경 악화 가능성",
-        ]
-        markers = ["①", "②", "③"]
-        for i, risk in enumerate(risks[:3]):
-            _body_para(doc, f"{markers[i]}  {str(risk).strip()}", color=RISK_RED)
-
     # ═══════════════ 마지막 페이지: 전체 종목 + 섹터 + Next Steps + RM ═══════════════
     doc.add_page_break()
 
     _section_eyebrow(doc, "Full Holdings  ·  전체 종목 상세 현황")
     _holdings_table(doc, sorted_p, stock_data, full=True)
-
-    # 섹터 가로 막대
-    doc.add_paragraph().paragraph_format.space_after = Pt(4)
-    _section_eyebrow(doc, "Sector Allocation  ·  섹터 구성")
-    _sector_bars(doc, sector_agg)
 
     # 리밸런싱 액션 플랜 — AI 제공 구체 액션 (없으면 기존 섹터 NOTE fallback)
     if rebalancing:

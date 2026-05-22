@@ -35,7 +35,14 @@ from fetcher_kr import get_stock_data as get_kr_data
 from fetcher_overseas import get_yahoo_data, identify_ticker
 from image_parser import detect_media_type, parse_portfolio_image
 from macro_briefing import fetch_indices, generate_macro_briefing
-from portfolio import classify_and_map, deduplicate, is_us_ticker, resolve_kr_via_naver_search
+from portfolio import (
+    classify_and_map,
+    deduplicate,
+    is_overseas_name,
+    is_us_ticker,
+    name_to_ticker_static,
+    resolve_kr_via_naver_search,
+)
 from portfolio_health import diagnose_health
 from rebalancing import generate_rebalancing
 from report_builder import build_detail, build_summary
@@ -88,6 +95,7 @@ st.set_page_config(page_title="VIP 포트폴리오 브리핑", page_icon="📊",
 # ─── 세션 상태 ────────────────────────────────────────────────────────────
 for key, default in [
     ("portfolio", []),
+    ("account", {}),  # 예수금, 매매잔고합계
     ("stock_data", {}),
     ("ai_analysis", []),
     ("macro_briefing", {}),
@@ -196,13 +204,43 @@ if st.session_state.step < 1:
                 st.write(f"이미지 크기: {size_mb:.1f} MB")
                 if len(image_bytes) > 3_700_000:
                     st.write("⚠️ 이미지가 커서 Claude API 한도에 맞춰 자동 축소합니다")
-                raw = parse_portfolio_image(image_bytes, media_type, api_key)
-                st.write(f"✓ {len(raw)}개 종목 추출")
-                portfolio = deduplicate(raw)
-                if len(portfolio) < len(raw):
+                result = parse_portfolio_image(image_bytes, media_type, api_key)
+                stocks_raw = result.get("stocks", []) or []
+                account = result.get("account", {}) or {}
+                st.write(f"✓ {len(stocks_raw)}개 종목 추출")
+                if account.get("예수금"):
+                    st.write(f"  • 예수금: {int(account['예수금']):,}원")
+                if account.get("매매잔고합계"):
+                    st.write(f"  • 매매잔고합계: {int(account['매매잔고합계']):,}원")
+                portfolio = deduplicate(stocks_raw)
+                if len(portfolio) < len(stocks_raw):
                     st.write(f"✓ 중복 합산 → {len(portfolio)}개")
+
+                # 정적 맵에 없는 국내 종목 → 네이버 검색으로 정식 종목명 교정
+                unknowns = [
+                    h for h in portfolio
+                    if not is_overseas_name(h["종목명"])
+                    and not name_to_ticker_static(h["종목명"])
+                ]
+                if unknowns:
+                    st.write(f"네이버 검색으로 정식 종목명 확인 중 ({len(unknowns)}개)...")
+                    for h in unknowns:
+                        orig_name = h["종목명"]
+                        ticker, canonical = resolve_kr_via_naver_search(orig_name)
+                        if ticker and canonical:
+                            h["ticker"] = ticker
+                            h["market"] = "KR"
+                            if canonical != orig_name:
+                                h["종목명"] = canonical
+                                st.write(f"  ✓ {orig_name} → {canonical} ({ticker})")
+                            else:
+                                st.write(f"  ✓ {orig_name} → {ticker}")
+                        else:
+                            st.write(f"  ✗ {orig_name} → 식별 불가 (편집 표에서 수정 필요)")
+
                 status.update(label=f"종목 추출 완료 ({len(portfolio)}개)", state="complete")
                 st.session_state.portfolio = portfolio
+                st.session_state.account = account
                 st.session_state.step = 1
                 st.rerun()
             except Exception as e:
@@ -285,11 +323,15 @@ if st.session_state.step == 2:
                        expanded=True) as status:
             for h in kr_pending:
                 name = h["종목명"]
-                ticker = resolve_kr_via_naver_search(name)
-                if ticker:
+                ticker, canonical = resolve_kr_via_naver_search(name)
+                if ticker and canonical:
                     h["ticker"] = ticker
                     h["market"] = "KR"
-                    st.write(f"  ✓ {name} → {ticker}")
+                    if canonical != name:
+                        h["종목명"] = canonical
+                        st.write(f"  ✓ {name} → {canonical} ({ticker})")
+                    else:
+                        st.write(f"  ✓ {name} → {ticker}")
                 else:
                     h["ticker"] = None
                     h["market"] = "unknown"
@@ -421,11 +463,19 @@ total_ev = sum(h.get("평가금액") or 0 for h in portfolio)
 pnl_arr = [h for h in portfolio if h.get("손익율") is not None]
 avg_pnl = sum(h["손익율"] for h in pnl_arr) / len(pnl_arr) if pnl_arr else None
 
-m1, m2, m3, m4 = st.columns(4)
+account = st.session_state.get("account", {}) or {}
+cash = account.get("예수금")
+total_balance = account.get("매매잔고합계")
+
+m1, m2, m3 = st.columns(3)
 m1.metric("총 종목 수", f"{len(portfolio)}개")
-m2.metric("총 평가금액", f"{total_ev:,.0f}원" if total_ev else "-")
-m3.metric("평균 수익률", f"{avg_pnl:+.2f}%" if avg_pnl is not None else "-")
-m4.metric("최대 비중", sorted_p[0]["종목명"] if sorted_p else "-")
+m2.metric("주식 평가금액", f"{total_ev:,.0f}원" if total_ev else "-")
+m3.metric("예수금", f"{int(cash):,}원" if isinstance(cash, (int, float)) else "-")
+
+m4, m5, m6 = st.columns(3)
+m4.metric("매매잔고합계", f"{int(total_balance):,}원" if isinstance(total_balance, (int, float)) else "-")
+m5.metric("평균 손익율", f"{avg_pnl:+.2f}%" if avg_pnl is not None else "-")
+m6.metric("최대 비중", sorted_p[0]["종목명"] if sorted_p else "-")
 
 # 종목 테이블
 rows = []
