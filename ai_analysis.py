@@ -53,8 +53,12 @@ def _safe_parse_json(raw: str) -> list[dict] | None:
 
 
 def analyze_top_holdings(portfolio: list[dict], stock_data: dict, api_key: str,
-                         top_n: int = 3) -> list[dict]:
+                         top_n: int = 3,
+                         deep_data: dict | None = None) -> list[dict]:
     """비중 상위 top_n 종목에 대한 심층 분석.
+
+    deep_data: {ticker: {"per_compare": {...}, "flow": {...}, "chart_png": bytes}}
+    이 데이터가 있으면 AI 프롬프트에 풍부한 컨텍스트로 포함됨.
 
     반환: [{name, ticker, competitive_position, recent_performance, valuation,
            catalysts, risks(list[str]), strategy_short, strategy_mid}, ...]
@@ -74,9 +78,45 @@ def analyze_top_holdings(portfolio: list[dict], stock_data: dict, api_key: str,
         target = nf.get("analyst_target_price")
         target_str = f"{target:,}원" if isinstance(target, (int, float)) else "N/A"
 
-        # 종목별 최근 뉴스 수집 (실패해도 분석 진행)
         ticker = h.get("ticker") or ""
         market = h.get("market") or "KR"
+
+        # 심층 데이터 (PER 비교 + 30일 수급) — AI 프롬프트 컨텍스트 강화
+        deep = (deep_data or {}).get(ticker, {}) or {}
+        per_cmp = deep.get("per_compare") or {}
+        flow = deep.get("flow") or {}
+
+        per_text = ""
+        cur_per = per_cmp.get("current_per")
+        avg_5y = per_cmp.get("avg_5y")
+        sector_avg = per_cmp.get("sector_avg_per")
+        if cur_per and (avg_5y or sector_avg):
+            parts = []
+            if avg_5y:
+                vs_h = per_cmp.get("vs_history_pct", 0)
+                judge = ("역사적 저평가" if vs_h < -10
+                         else "역사적 고평가" if vs_h > 10
+                         else "역사적 평균")
+                parts.append(f"5년 평균 {avg_5y:.1f}배 — {judge} ({vs_h:+.0f}%)")
+            if sector_avg:
+                vs_s = per_cmp.get("vs_sector_pct", 0)
+                parts.append(
+                    f"업종({per_cmp.get('sector','-')}) 평균 "
+                    f"{sector_avg:.1f}배 ({vs_s:+.0f}%)"
+                )
+            if parts:
+                per_text = " | " + ", ".join(parts)
+
+        flow_text = ""
+        if flow:
+            from flow_data import format_flow_billion
+            f_amt, f_dir = format_flow_billion(flow.get("foreign_30d_won", 0))
+            i_amt, i_dir = format_flow_billion(flow.get("institution_30d_won", 0))
+            flow_text = (
+                f"\n수급(30일 누적): 외국인 {f_amt} {f_dir} | 기관 {i_amt} {i_dir}"
+            )
+
+        # 종목별 최근 뉴스 수집 (실패해도 분석 진행)
         news_items = fetch_news_for_stock(ticker, market, limit=8, name=h.get("종목명"))
         # 진단용 stderr 출력 — 시작.bat 콘솔에서 수집 여부 확인 가능
         import sys
@@ -97,10 +137,10 @@ def analyze_top_holdings(portfolio: list[dict], stock_data: dict, api_key: str,
         summaries.append(
             f"[{h['종목명']} | {ticker or 'N/A'} | 비중: {h.get('비중',0):.1f}%]\n"
             f"현재가: {_fp(krx.get('current_price'))} | 시가총액: {_fl(krx.get('market_cap'))}\n"
-            f"PER: {nf.get('per','N/A')} | PBR: {nf.get('pbr','N/A')} | "
-            f"EPS: {nf.get('eps','N/A')} | BPS: {nf.get('bps','N/A')}\n"
+            f"PER: {nf.get('per','N/A')}{per_text}\n"
+            f"PBR: {nf.get('pbr','N/A')} | EPS: {nf.get('eps','N/A')} | BPS: {nf.get('bps','N/A')}\n"
             f"52주 고점: {_fp(krx.get('week52_high'))} | 52주 저점: {_fp(krx.get('week52_low'))}\n"
-            f"외국인 보유: {krx.get('foreign_ownership_ratio','N/A')}%\n"
+            f"외국인 보유: {krx.get('foreign_ownership_ratio','N/A')}%{flow_text}\n"
             f"증권사 목표주가: {target_str}\n"
             f"배당수익률: {nf.get('dividend_yield','N/A')}"
             f"{news_text}"

@@ -846,10 +846,113 @@ def _rebalancing_section(doc, rebalancing: list[dict]) -> None:
             _para_border_bottom(p3, ESPRESSO_HEX + "1A", size=2)
 
 
+# ─── 종목별 신규 섹션: PER 비교 / 30일 수급 / 1년 차트 ──────────────────────
+def _per_compare_block(doc, per_compare: dict) -> None:
+    """PER 현재 vs 5년 평균 vs 업종 평균 — 미니 표 + 판단 한 줄."""
+    if not per_compare:
+        return
+    cur = per_compare.get("current_per")
+    avg_5y = per_compare.get("avg_5y")
+    min_5y = per_compare.get("min_5y")
+    max_5y = per_compare.get("max_5y")
+    sector_avg = per_compare.get("sector_avg_per")
+    sector = per_compare.get("sector", "-")
+
+    if not any([cur, avg_5y, sector_avg]):
+        return
+
+    _section_eyebrow(doc, "Valuation Compare  ·  PER 역사·업종 비교")
+
+    headers = ["현재 PER", "5년 평균", "5년 최저", "5년 최고", f"업종({sector}) 평균"]
+    values = [
+        f"{cur:.2f}" if isinstance(cur, (int, float)) else "-",
+        f"{avg_5y:.2f}" if avg_5y else "-",
+        f"{min_5y:.2f}" if min_5y else "-",
+        f"{max_5y:.2f}" if max_5y else "-",
+        f"{sector_avg:.1f}" if sector_avg else "-",
+    ]
+    _kv_grid(doc, headers, values)
+
+    bullets = []
+    if isinstance(cur, (int, float)) and avg_5y:
+        vs_h = per_compare.get("vs_history_pct", 0)
+        verdict = ("역사적 저평가 구간" if vs_h < -10
+                   else "역사적 고평가 구간" if vs_h > 10
+                   else "역사적 평균 수준")
+        bullets.append(f"5년 평균 대비 {vs_h:+.0f}% — {verdict}")
+    if isinstance(cur, (int, float)) and sector_avg:
+        vs_s = per_compare.get("vs_sector_pct", 0)
+        if vs_s > 0:
+            bullets.append(f"업종 평균 대비 {vs_s:+.0f}% 프리미엄")
+        else:
+            bullets.append(f"업종 평균 대비 {abs(vs_s):.0f}% 디스카운트")
+
+    for b in bullets:
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.left_indent = Cm(0.4)
+        _add_run(p, "•   ", size=10, color=ESPRESSO)
+        _add_run(p, b, size=10, color=BODY)
+
+
+def _flow_block(doc, flow: dict) -> None:
+    """30일 외국인·기관 누적 매매 — 부호별 색상."""
+    if not flow:
+        return
+    from flow_data import format_flow_billion
+
+    foreign = flow.get("foreign_30d_won", 0)
+    inst = flow.get("institution_30d_won", 0)
+
+    _section_eyebrow(doc, "Trading Flow  ·  30일 외국인·기관 수급")
+
+    f_amt, f_dir = format_flow_billion(foreign)
+    i_amt, i_dir = format_flow_billion(inst)
+
+    f_color = GAIN_GREEN if foreign > 0 else RISK_RED if foreign < 0 else MUTED
+    i_color = GAIN_GREEN if inst > 0 else RISK_RED if inst < 0 else MUTED
+
+    p1 = doc.add_paragraph()
+    p1.paragraph_format.space_before = Pt(4)
+    p1.paragraph_format.space_after = Pt(2)
+    p1.paragraph_format.left_indent = Cm(0.4)
+    _add_run(p1, "외국인:  ", bold=True, size=10, color=ESPRESSO)
+    _add_run(p1, f_amt, bold=True, size=10, color=f_color)
+    _add_run(p1, f"  ({f_dir})", size=10, color=BODY)
+
+    p2 = doc.add_paragraph()
+    p2.paragraph_format.space_after = Pt(6)
+    p2.paragraph_format.left_indent = Cm(0.4)
+    _add_run(p2, "기관:     ", bold=True, size=10, color=ESPRESSO)
+    _add_run(p2, i_amt, bold=True, size=10, color=i_color)
+    _add_run(p2, f"  ({i_dir})", size=10, color=BODY)
+
+
+def _chart_block(doc, chart_png: bytes) -> None:
+    """1년 주가 차트 이미지 임베드 (PNG bytes)."""
+    if not chart_png:
+        return
+    from io import BytesIO
+    from docx.shared import Inches as _Inches
+
+    _section_eyebrow(doc, "Price Chart  ·  최근 1년 주가 추이")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after = Pt(8)
+    run = p.add_run()
+    try:
+        run.add_picture(BytesIO(chart_png), width=_Inches(5.8))
+    except Exception:
+        pass
+
+
 # ─── 요약보고서 ──────────────────────────────────────────────────────────────
 def build_summary(portfolio, stock_data, ai_analysis,
                   sector_map, client, rm,
-                  macro=None, health=None, rebalancing=None):
+                  macro=None, health=None, rebalancing=None,
+                  account=None, deep_data=None):
     doc = _init_doc()
     sorted_p = sorted(portfolio, key=lambda h: h.get("비중", 0), reverse=True)
     total_ev = sum(h.get("평가금액") or 0 for h in portfolio)
@@ -963,7 +1066,8 @@ def build_summary(portfolio, stock_data, ai_analysis,
 # ─── 상세보고서 ──────────────────────────────────────────────────────────────
 def build_detail(portfolio, stock_data, ai_analysis,
                  sector_map, client, rm,
-                 macro=None, health=None, rebalancing=None):
+                 macro=None, health=None, rebalancing=None,
+                 account=None, deep_data=None):
     doc = _init_doc()
     sorted_p = sorted(portfolio, key=lambda h: h.get("비중", 0), reverse=True)
     total_ev = sum(h.get("평가금액") or 0 for h in portfolio)
@@ -1057,9 +1161,24 @@ def build_detail(portfolio, stock_data, ai_analysis,
                  values=[str(nf.get("dividend_yield", "-")), target_str,
                          _fl(krx.get("market_cap")), foreign_str, f"{h.get('비중',0):.1f}%"])
 
+        # 심층 데이터 (PER 비교, 차트, 수급) — deep_data가 있는 경우만
+        _deep = (deep_data or {}).get(h.get("ticker") or "", {}) or {}
+
+        # PER 역사·업종 비교
+        if _deep.get("per_compare"):
+            _per_compare_block(doc, _deep["per_compare"])
+
         # 52주 범위 비주얼
         _section_eyebrow(doc, "52-Week Range  ·  52주 가격 범위")
         _range_visual(doc, krx.get("week52_low"), krx.get("current_price"), krx.get("week52_high"))
+
+        # 1년 주가 차트 이미지
+        if _deep.get("chart_png"):
+            _chart_block(doc, _deep["chart_png"])
+
+        # 30일 외국인·기관 수급
+        if _deep.get("flow"):
+            _flow_block(doc, _deep["flow"])
 
         # 산업 내 경쟁 포지션
         if ai.get("competitive_position"):

@@ -46,6 +46,10 @@ from portfolio import (
 from portfolio_health import diagnose_health
 from rebalancing import generate_rebalancing
 from report_builder import build_detail, build_summary
+from email_template import build_email
+from flow_data import fetch_30day_flow
+from stock_chart import generate_price_chart
+from valuation_compare import get_per_comparison
 
 # 센터 내부 접근 비밀번호
 # 변경 방법:
@@ -97,6 +101,7 @@ for key, default in [
     ("portfolio", []),
     ("account", {}),  # 예수금, 매매잔고합계
     ("stock_data", {}),
+    ("deep_data", {}),  # 상위 3종목 PER 비교, 30일 수급, 1년 차트 PNG
     ("ai_analysis", []),
     ("macro_briefing", {}),
     ("health", {}),
@@ -369,10 +374,43 @@ if st.session_state.step == 2:
             progress.progress(i / len(items))
         status.update(label=f"시세 수집 완료 ({len(stock_data)}개)", state="complete")
 
+    # 2-5b: 심층 데이터 수집 (상위 3종목 — PER 역사/업종 비교, 30일 수급, 1년 차트)
+    with st.status("상위 3종목 심층 데이터 수집 중 (PER·수급·차트)...", expanded=True) as status:
+        deep_data: dict = {}
+        sorted_top = sorted(portfolio, key=lambda h: h.get("비중", 0), reverse=True)[:3]
+        for h in sorted_top:
+            ticker = h.get("ticker")
+            market = h.get("market", "KR")
+            if not ticker:
+                continue
+            d = stock_data.get(ticker, {}) or {}
+            nf = d.get("naver_finance", {}) or {}
+            cur_per = nf.get("per")
+            sector = SECTOR_MAP.get(ticker, "기타")
+            per_cmp = get_per_comparison(ticker, cur_per, sector)
+            flow = fetch_30day_flow(ticker) if market == "KR" else None
+            chart_png = generate_price_chart(ticker, market)
+            deep_data[ticker] = {
+                "per_compare": per_cmp,
+                "flow": flow,
+                "chart_png": chart_png,
+            }
+            bits = []
+            if per_cmp.get("avg_5y"):
+                bits.append(f"PER 5y평균 {per_cmp['avg_5y']:.1f}")
+            if flow:
+                bits.append("30일 수급 ✓")
+            if chart_png:
+                bits.append("1년 차트 ✓")
+            st.write(f"  ✓ {h['종목명']} — {', '.join(bits) if bits else '데이터 부족'}")
+        status.update(label=f"심층 데이터 완료 ({len(deep_data)}개)", state="complete")
+
     # 2-6: AI 심층 분석 (상위 3)
     with st.status("AI 심층 분석 중 (Claude Sonnet)...", expanded=True):
         try:
-            ai_results = analyze_top_holdings(portfolio, stock_data, api_key, top_n=3)
+            ai_results = analyze_top_holdings(
+                portfolio, stock_data, api_key, top_n=3, deep_data=deep_data
+            )
             st.write(f"✓ {len(ai_results)}개 종목 분석 완료")
         except Exception as e:
             st.warning(f"AI 분석 실패 — 보고서는 분석 없이 생성됩니다: {e}")
@@ -433,6 +471,7 @@ if st.session_state.step == 2:
 
     st.session_state.portfolio = portfolio
     st.session_state.stock_data = stock_data
+    st.session_state.deep_data = deep_data
     st.session_state.ai_analysis = ai_results
     st.session_state.macro_briefing = macro
     st.session_state.health = health
@@ -565,6 +604,8 @@ with c1:
                 macro=st.session_state.macro_briefing,
                 health=st.session_state.health,
                 rebalancing=st.session_state.rebalancing,
+                account=st.session_state.account,
+                deep_data=st.session_state.deep_data,
             )
         st.download_button(
             "⬇️ 요약보고서 다운로드 (.docx)",
@@ -583,6 +624,8 @@ with c2:
                 macro=st.session_state.macro_briefing,
                 health=st.session_state.health,
                 rebalancing=st.session_state.rebalancing,
+                account=st.session_state.account,
+                deep_data=st.session_state.deep_data,
             )
         st.download_button(
             "⬇️ 상세보고서 다운로드 (.docx)",
@@ -592,3 +635,22 @@ with c2:
             use_container_width=True,
             type="primary",
         )
+
+# ── STEP 5: 고객 발송용 메일 템플릿 ─────────────────────────────────────
+st.divider()
+st.subheader("6. 📧 고객 발송용 메일 템플릿")
+st.caption("아래 제목·본문을 회사 메일 작성창에 복사·붙여넣기하시고, "
+           "위에서 다운로드한 보고서 DOCX를 첨부하여 발송하세요.")
+
+_email = build_email(
+    client_name=client_name,
+    rm_name=rm_name,
+    portfolio=portfolio,
+    ai_analysis=ai_analysis,
+    account=st.session_state.get("account", {}),
+    report_filename=f"{client_name}_상세보고서_{date_str}.docx",
+)
+
+st.text_input("제목", value=_email["subject"], key="email_subject_field")
+st.text_area("본문 (복사용)", value=_email["body"],
+             height=480, key="email_body_field")
